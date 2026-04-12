@@ -1,0 +1,9 @@
+[project]
+name = "agents"
+version = "0.1.0"
+description = "Workspace utilities; churn script deps listed below."
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.0",
+    "scikit-learn>=1.3",
+]
