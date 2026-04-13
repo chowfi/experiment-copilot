@@ -5,8 +5,10 @@ Dependencies:
     pip install pandas scikit-learn
     Or from repo root: uv sync && uv run python customer_churn_random_forest.py
 
-Data (Kaggle, pre-split):
+Data (Kaggle):
     https://www.kaggle.com/datasets/muhammadshahidazeem/customer-churn-dataset
+    The Kaggle-provided train/test split has severe distribution mismatch, so we
+    concatenate both CSVs and re-split with a stratified 80/20 split ourselves.
 
 Fetch CSVs into ./data (next to this file) with:
     bash download_customer_churn_data.sh
@@ -21,6 +23,7 @@ Binary decisions: by default we predict churn (positive class) when P(churn) >= 
 Lower threshold → more predicted 1s, fewer 0s. Override with CHURN_DECISION_THRESHOLD (e.g. 0.35).
 
 Features: `Gender`, `Subscription Type`, and `Contract Length` are one-hot encoded; all other feature columns are numeric (median impute + scale).
+`CustomerID` is excluded (identifier; strong spurious correlation with churn in this split).
 
 Grid search: set RUN_GRID_SEARCH=1 (optional: GRID_CV_SPLITS=3, GRID_SEARCH_VERBOSE=1). Heavy on full train data.
 """
@@ -37,7 +40,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.metrics import accuracy_score, classification_report, roc_auc_score
-from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.model_selection import GridSearchCV, StratifiedKFold, train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import LabelEncoder, OneHotEncoder, StandardScaler
 
@@ -51,6 +54,9 @@ TRAIN_FILE = "customer_churn_dataset-training-master.csv"
 TEST_FILE = "customer_churn_dataset-testing-master.csv"
 
 TARGET_COL = "Churn"
+
+# Identifiers / columns not used as predictors (see module docstring).
+EXCLUDE_FROM_FEATURES: frozenset[str] = frozenset({"CustomerID"})
 
 # Categorical columns: always one-hot encoded (stringified before OHE).
 CATEGORICAL_OHE_COLS = ["Gender", "Subscription Type", "Contract Length"]
@@ -66,22 +72,18 @@ PARAM_GRID: dict[str, list] = {
 
 # --- five tunable Random Forest hyperparameters ---
 RF_PARAMS = {
-    "n_estimators": 5,
-    "max_depth": 6,
-    "min_samples_split": 50,
-    "min_samples_leaf": 50,
-    "max_features": "sqrt",
+    "n_estimators": 100,
+    "max_depth": 10,
 }
 
 # Fixed RandomForest args (not in RF_PARAMS); included in experiment logs.
 RF_FIXED = {
     "random_state": 42,
     "n_jobs": -1,
-    "class_weight": "balanced",
 }
 
 # Predict positive (churn) when P(pos) >= this; lower → more 1s, fewer 0s vs 0.5.
-DECISION_THRESHOLD = 0.681818
+DECISION_THRESHOLD = 0.146465
 
 
 def configure_logging() -> Path:
@@ -132,6 +134,10 @@ def _log_classification_metrics(split: str, y_true: np.ndarray, y_pred: np.ndarr
     logger.info("%s: classification_report\n%s", prefix, report)
 
 
+def _feature_column_names(columns: pd.Index) -> list[str]:
+    return [c for c in columns if c != TARGET_COL and c not in EXCLUDE_FROM_FEATURES]
+
+
 def _encode_target(y_train: pd.Series, y_test: pd.Series) -> tuple[np.ndarray, np.ndarray, LabelEncoder | None]:
     if y_train.dtype == object or str(y_train.dtype) == "string":
         le = LabelEncoder()
@@ -161,7 +167,7 @@ def build_pipeline(numeric_cols: list[str], categorical_cols: list[str]) -> Pipe
                 ("imputer", SimpleImputer(strategy="most_frequent")),
                 (
                     "onehot",
-                    OneHotEncoder(handle_unknown="ignore", sparse_output=False),
+                    OneHotEncoder(drop="first", handle_unknown="ignore", sparse_output=False),
                 ),
             ]
         )
@@ -212,35 +218,42 @@ def main() -> None:
             )
 
         logger.info("Loading CSVs: %s", train_path)
-        df_train = pd.read_csv(train_path)
+        df_kaggle_train = pd.read_csv(train_path)
         logger.info("Loading CSVs: %s", test_path)
-        df_test = pd.read_csv(test_path)
-        logger.info("Loaded raw rows: train=%d test=%d", len(df_train), len(df_test))
+        df_kaggle_test = pd.read_csv(test_path)
+        logger.info(
+            "Loaded raw rows: kaggle_train=%d kaggle_test=%d",
+            len(df_kaggle_train),
+            len(df_kaggle_test),
+        )
 
-        if TARGET_COL not in df_train.columns:
+        df_all = pd.concat([df_kaggle_train, df_kaggle_test], ignore_index=True)
+        logger.info("Combined dataset: %d rows", len(df_all))
+
+        if TARGET_COL not in df_all.columns:
             raise KeyError(
-                f"Column {TARGET_COL!r} not in training CSV. "
-                f"Columns: {list(df_train.columns)}"
-            )
-        if TARGET_COL not in df_test.columns:
-            raise KeyError(
-                f"Column {TARGET_COL!r} not in test CSV. "
-                f"Columns: {list(df_test.columns)}"
+                f"Column {TARGET_COL!r} not in data. Columns: {list(df_all.columns)}"
             )
 
-        _n_tr, _n_te = len(df_train), len(df_test)
-        df_train = df_train.dropna(subset=[TARGET_COL])
-        df_test = df_test.dropna(subset=[TARGET_COL])
-        _d_tr, _d_te = _n_tr - len(df_train), _n_te - len(df_test)
-        if _d_tr or _d_te:
-            logger.warning(
-                "Dropped rows with missing %s: train=%d test=%d",
-                TARGET_COL,
-                _d_tr,
-                _d_te,
-            )
+        _n_before = len(df_all)
+        df_all = df_all.dropna(subset=[TARGET_COL])
+        _n_dropped = _n_before - len(df_all)
+        if _n_dropped:
+            logger.warning("Dropped %d rows with missing %s", _n_dropped, TARGET_COL)
 
-        feature_cols = [c for c in df_train.columns if c != TARGET_COL]
+        test_size = float(os.environ.get("TEST_SIZE", "0.2"))
+        df_train, df_test = train_test_split(
+            df_all, test_size=test_size, random_state=42, stratify=df_all[TARGET_COL],
+        )
+        logger.info(
+            "Stratified split (test_size=%.2f): train=%d test=%d",
+            test_size, len(df_train), len(df_test),
+        )
+
+        feature_cols = _feature_column_names(df_train.columns)
+        excluded = [c for c in df_train.columns if c != TARGET_COL and c not in feature_cols]
+        if excluded:
+            logger.info("Excluded from features: %s", excluded)
         X_train = df_train[feature_cols].copy()
         X_test = df_test[feature_cols].copy()
         y_train_raw = df_train[TARGET_COL]

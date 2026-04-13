@@ -105,12 +105,17 @@ def main() -> None:
                 "Set DATA_DIR if needed."
             )
 
-        df_train = pd.read_csv(train_path)
-        df_test = pd.read_csv(test_path)
-        df_train = df_train.dropna(subset=[churn.TARGET_COL])
-        df_test = df_test.dropna(subset=[churn.TARGET_COL])
+        df_all = pd.concat(
+            [pd.read_csv(train_path), pd.read_csv(test_path)],
+            ignore_index=True,
+        ).dropna(subset=[churn.TARGET_COL])
 
-        feature_cols = [c for c in df_train.columns if c != churn.TARGET_COL]
+        test_size = float(os.environ.get("TEST_SIZE", "0.2"))
+        df_train, df_test = train_test_split(
+            df_all, test_size=test_size, random_state=42, stratify=df_all[churn.TARGET_COL],
+        )
+
+        feature_cols = churn._feature_column_names(df_train.columns)
         X_train = df_train[feature_cols]
         X_test = df_test[feature_cols]
         y_train, y_test, _ = churn._encode_target(

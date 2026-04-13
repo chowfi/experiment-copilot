@@ -3,7 +3,8 @@ name: churn-rf-experiment-tracker
 description: >-
   Runs customer_churn_random_forest.py with uv, reads customer_churn_random_forest.log,
   diffs or summarizes the script, writes Intent as change-plus-motivation using chat, prior
-  EXPERIMENTS rows, and train/test metrics (Acc, AUC, weighted P/R/F1), appends one row to EXPERIMENTS.md,
+  EXPERIMENTS rows, train/test metrics (Acc, AUC, weighted P/R/F1), a concise vs-prior Effect summary,
+  appends one row to EXPERIMENTS.md,
   and echoes that row in chat. Use for churn RF experiments, tuning, logs, or tracking.
 ---
 
@@ -31,10 +32,11 @@ Apply when the user wants to **execute** the churn script and **record** a run, 
 4. **Read the log**; isolate the **latest run** (see Parsing the log).
 5. **Code changes**: `git diff HEAD -- customer_churn_random_forest.py` (or ref the user names). If untracked or empty diff, one **Action** cell summarizing current tunables (`RF_PARAMS`, `RF_FIXED`, paths, preprocessor) as the “change” for this baseline.
 6. **Intent cell**: write per **Intent cell (experiment hypothesis)** below (after reading **EXPERIMENTS.md**’s previous row when `Run#` > 1).
-7. **Recommendation**: **one** short phrase for the Recommendation cell, grounded in metrics (train vs test gap, class balance in the log), and the commented `GridSearchCV` block (~223–241).
-8. **Output (concise)**:
+7. **Effect cell**: write per **Effect cell (vs prior run)** below (compare this run’s **test** Acc, AUC, and weighted F1 to the **previous table row**; `Run#1` has no prior—see that section).
+8. **Recommendation**: **one** short phrase for the Recommendation cell, grounded in metrics (train vs test gap, class balance in the log), and the commented `GridSearchCV` block (~223–241).
+9. **Output (concise)**:
    - In chat, paste **only** the new markdown **table row** you appended (the `| … |` line) plus one line: `EXPERIMENTS.md updated.` No long prose.
-9. **Journal (required)**:
+10. **Journal (required)**:
    - Update **`EXPERIMENTS.md`** at the **repository root** using the **table format** below.
    - **If the file is missing or has no table**: create `# Churn RF experiments`, then the **header row**, **separator row**, then the first **data row** for `Run#1`.
    - **If the table exists**: append **exactly one new data row** after the last data row. **Do not** duplicate the header or title. **Do not** edit prior rows.
@@ -42,11 +44,12 @@ Apply when the user wants to **execute** the churn script and **record** a run, 
    - **Migrating legacy tables**:
      - If a **CM** column exists (old skill), replace header + separator with the current schema and drop CM from each data row (pad or delete that cell only).
      - If the table has **no PRF1** column yet, replace the **header** and **separator** with the current set in **Journal format**, then insert **`train: n/a; test: n/a`** in the new **PRF1** position on **every existing data row** so pipe counts match (do not re-run old experiments to backfill unless the user asks).
-   - Before finalizing **Intent**, read **`EXPERIMENTS.md`** (if it exists): use the **last row’s** Action, Acc/AUC, and Recommendation as “what came before” when this run is not the first.
+     - If there is **no Effect** column yet, replace **header** + **separator** with the current set, then add **`n/a`** (or `Baseline only` for `Run#1` if obvious) in the new **Effect** cell on each existing row.
+   - Before finalizing **Intent** and **Effect**, read **`EXPERIMENTS.md`** (if it exists): use the **last row’s** Action, Acc/AUC, PRF1, and Recommendation as “what came before” when this run is not the first.
 
 ### Failed runs
 
-Append one table row: put exit code / error snippet in **Action** or **Acc**/**AUC** cells as `train: —; test: —` or `n/a`; **PRF1** as `train: n/a; test: n/a` if no report; **Recommendation** = fix-first.
+Append one table row: put exit code / error snippet in **Action** or **Acc**/**AUC** cells as `train: —; test: —` or `n/a`; **PRF1** as `train: n/a; test: n/a` if no report; **Effect** as `n/a`; **Recommendation** = fix-first.
 
 ## Parsing the log
 
@@ -88,15 +91,40 @@ The **Intent** column must read like a **short experiment rationale**: what you 
 
 If chat is silent and motivation is entirely from metrics/diff, start with **Inferred:** then the same change+motivation pattern in one clause.
 
+## Effect cell (vs prior run)
+
+**Effect** summarizes whether this run **helped, hurt, or mixed** outcomes **versus the immediately previous row** in `EXPERIMENTS.md`, using **test** metrics (parse **test** Acc, AUC, and weighted **F1** from this run and the prior row’s cells).
+
+**Format (one table cell, no newlines):**
+
+- **2–3 clauses**, separated by **`; `** (semicolon + space).
+- **Each clause ≤ 10 words** (hard cap). No bullets inside the cell.
+- Each clause should give a **direction**: up / down / flat / mixed / unclear vs prior on **test** (name the metric when useful: AUC, Acc, wF1).
+
+**Examples (each clause under 10 words):**
+
+- `Test AUC up; test wF1 flat; test Acc slightly up`
+- `Test AUC down; wF1 down; prior better overall`
+- `Mixed: AUC up, wF1 down`
+- `All test metrics flat vs prior`
+
+**Run#1 / no prior row:** `Baseline; no prior row.`
+
+**Rules:**
+
+- Prefer **test** comparisons; mention **train–test gap** only in one short clause if it clearly widened or narrowed (still ≤10 words per clause).
+- If prior row lacks parseable numbers, use `Unclear vs prior; …` (second clause optional).
+- Do **not** repeat full numbers; direction and metric name are enough.
+
 ## Journal format (markdown table)
 
 **Columns (fixed order — no CM column):**
 
-`| Run# | Timestamp | Action | Acc | AUC | PRF1 | Intent | Recommendation |`
+`| Run# | Timestamp | Action | Acc | AUC | PRF1 | Intent | Effect | Recommendation |`
 
 **Separator row (copy exactly when creating the table):**
 
-`|-----:|-----------|--------|-----|-----|------|--------|------------------|`
+`|-----:|-----------|--------|-----|-----|------|--------|--------|------------------|`
 
 **Acc** and **AUC** cells must include **both** training and test numbers parsed from the latest run, in this exact shape (compact, one line per cell):
 
@@ -113,13 +141,14 @@ Example: `train: 1.000000; test: 0.497313` in **Acc**, and `train: 1.000000; tes
 **Data row template:**
 
 ```markdown
-| N | YYYY-MM-DD HH:MM:SS | …one line… | train: …; test: … | train: …; test: … | train: P=… R=… F1=…; test: P=… R=… F1=… | … | … |
+| N | YYYY-MM-DD HH:MM:SS | …one line… | train: …; test: … | train: …; test: … | train: P=… R=… F1=…; test: P=… R=… F1=… | …intent… | …effect… | … |
 ```
 
 **Rules:**
 
-- Keep **Action**, **Intent**, **PRF1**, and **Recommendation** on **one table row** each (no embedded newlines). Trim wording; use backticks for code tokens.
+- Keep **Action**, **Intent**, **Effect**, **PRF1**, and **Recommendation** on **one table row** each (no embedded newlines). Trim wording; use backticks for code tokens.
 - **Intent** must follow **Intent cell (experiment hypothesis)** above.
+- **Effect** must follow **Effect cell (vs prior run)** above.
 - Do not place `---` horizontal rules between runs; table rows are the history.
 
 ## Report template (for agents; output must stay minimal)
